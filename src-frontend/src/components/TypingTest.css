@@ -1,0 +1,314 @@
+.typing-test {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem;
+  cursor: text;
+}
+
+.test-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.timer {
+  font-size: 3rem;
+  font-weight: 700;
+  color: #646669;
+}
+
+.timer span {
+  transition: color 0.3s ease;
+}
+
+.timer .warning {
+  color: #ca4754;
+  animation: pulse 0.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.mode-indicator {
+  display: flex;
+  align-items: center;
+}
+
+.mode {
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: lowercase;
+  letter-spacing: 0.5px;
+}
+
+.mode.training {
+  background-color: rgba(76, 175, 80, 0.15);
+  color: #4caf50;
+}
+
+.mode.incognito {
+  background-color: rgba(100, 102, 105, 0.2);
+  color: #d1d0c5;
+}
+
+.mode.guest {
+  background-color: rgba(226, 183, 20, 0.15);
+  color: #e2b714;
+}
+
+/* Typing box - 60% larger (was 120px, now 192px) */
+.sentence-display {
+  font-size: 1.5rem;
+  line-height: 2;
+  color: #646669;
+  margin-bottom: 1.5rem;
+  padding: 2rem;
+  background-color: transparent;
+  border-radius: 8px;
+  height: 192px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  word-wrap: break-word;
+  scroll-behavior: smooth;
+  /* Hide scrollbar for cleaner look */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.sentence-display::-webkit-scrollbar {
+  display: none;
+}
+
+.char {
+  transition: color 0.1s ease-out, background-color 0.1s ease-out;
+  will-change: color, background-color;
+}
+
+.char.correct {
+  color: #d1d0c5;
+}
+
+.char.incorrect {
+  color: #ca4754;
+  text-decoration: none;
+  background-color: rgba(202, 71, 84, 0.15);
+  border-radius: 2px;
+}
+
+.char.current {
+  background-color: transparent;
+  border-left: 2px solid #e2b714;
+  margin-left: -1px;
+  padding-left: 1px;
+  animation: caret 1s ease-in-out infinite;
+}
+
+@keyframes caret {
+  0%, 100% {
+    border-color: #e2b714;
+  }
+  50% {
+    border-color: transparent;
+  }
+}
+
+.typing-input {
+  position: absolute;
+  left: -9999px;
+  opacity: 0;
+}
+
+.start-hint {
+  text-align: center;
+  color: #646669;
+  font-size: 0.9rem;
+  padding: 1rem;
+  animation: fadeInOut 2s ease-in-out infinite;
+}
+
+.start-hint.processing {
+  color: #e2b714;
+  animation: none;
+}
+
+@keyframes fadeInOut {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.retry-btn {
+  display: block;
+  width: 100%;
+  max-width: 200px;
+  margin: 1.5rem auto 0;
+  padding: 0.75rem 2rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  background-color: transparent;
+  color: #646669;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.retry-btn:hover {
+  color: #d1d0c5;
+  background-color: #2c2e31;
+}
+
+.results {
+  text-align: center;
+  padding: 2rem;
+  background-color: #2c2e31;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+}
+
+.results h3 {
+  color: #d1d0c5;
+  margin-bottom: 1.5rem;
+  font-size: 1rem;
+  font-weight: 400;
+  text-transform: lowercase;
+}
+
+.stats {
+  display: flex;
+  justify-content: center;
+  gap: 4rem;
+  margin-bottom: 1.5rem;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.stat-value {
+  font-size: 3rem;
+  font-weight: 700;
+  color: #e2b714;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: #646669;
+  text-transform: lowercase;
+  letter-spacing: 0.5px;
+  margin-top: 0.25rem;
+}
+
+.submitting {
+  color: #e2b714;
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+.error {
+  color: #ca4754;
+  background-color: rgba(202, 71, 84, 0.1);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  margin: 1rem 0;
+  font-size: 0.85rem;
+}
+
+.success {
+  color: #4caf50;
+  background-color: rgba(76, 175, 80, 0.1);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  margin: 1rem 0;
+  font-size: 0.85rem;
+}
+
+.guest-message {
+  color: #646669;
+  font-size: 0.85rem;
+  margin: 1rem 0;
+}
+
+.identify-result {
+  margin: 1.5rem 0;
+  padding: 1.5rem;
+  background-color: #323437;
+  border-radius: 6px;
+}
+
+.identified {
+  color: #4caf50;
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+}
+
+.identified strong {
+  color: #e2b714;
+}
+
+.not-identified {
+  color: #ca4754;
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+}
+
+.confidence {
+  color: #646669;
+  font-size: 0.9rem;
+}
+
+/* Prediction box shown during incognito mode */
+.prediction-box {
+  background-color: #2c2e31;
+  border-radius: 8px;
+  padding: 1rem 1.5rem;
+  margin: 1rem 0;
+  text-align: center;
+}
+
+.prediction-header {
+  margin-bottom: 0.5rem;
+}
+
+.segment-indicator {
+  font-size: 0.7rem;
+  color: #646669;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.prediction-text {
+  font-size: 1rem;
+  color: #d1d0c5;
+  margin: 0;
+}
+
+.prediction-text strong {
+  color: #e2b714;
+}
+
+.prediction-text.unknown {
+  color: #ca4754;
+}
+
+.prediction-text.unknown strong {
+  color: #ca4754;
+}
+
+.instructions {
+  text-align: center;
+  color: #646669;
+  font-size: 0.8rem;
+  margin-top: 2rem;
+}
+
+.instructions p {
+  margin: 0;
+}
