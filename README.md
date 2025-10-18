@@ -5,7 +5,7 @@
 ## 🚀 Demo
 
 Check out the live application here:
-[Link to Live Demo](#) *(https://cactus-profiler-frontend.vercel.app/)*
+[Link to Live Demo](https://cactus-profiler-frontend.vercel.app/)
 
 ## 📸 Screenshots
 
@@ -49,3 +49,7 @@ The incognito mode uses a progressive elimination algorithm. As you type more se
 ## 🔒 Privacy
 
 Your typing data is only used to train and improve the identification model. The application **does not capture the actual content** you type, only the timing metrics between keystrokes.
+
+## 📄 License
+
+This project is licensed under the **GNU General Public License v3.0**. See the [LICENSE](LICENSE) file for details.
