@@ -4,16 +4,19 @@
 
 ## 🚀 Demo
 
-Check out the live application here:
+Check out the frontend only demo version:
 [Link to Live Demo](https://cactus-profiler-frontend.vercel.app/)
 
 ## 📸 Screenshots
 
-![Main Dashboard](path/to/screenshot1.png)
-*Application Interface*
+![Training Mode](./src-frontend/public/screen1.png)
+*Training Mode*
 
-![Identification Mode](path/to/screenshot2.png)
-*Typing Analysis in action*
+![Incognito Mode](./src-frontend/public/screen2.png)
+*Incognito Mode*
+
+![Verdict](./src-frontend/public/screen3.png)
+*Verdict*
 
 ---
 
