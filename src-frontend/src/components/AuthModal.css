@@ -1,0 +1,145 @@
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background-color: #2c2e31;
+  padding: 2rem;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 360px;
+  position: relative;
+}
+
+.modal-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: none;
+  border: none;
+  color: #646669;
+  font-size: 1.25rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.2s ease;
+}
+
+.modal-close:hover {
+  color: #d1d0c5;
+}
+
+.modal-content h2 {
+  margin: 0 0 1.5rem 0;
+  color: #d1d0c5;
+  text-align: center;
+  font-weight: 400;
+  font-size: 1.25rem;
+  text-transform: lowercase;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: #646669;
+  font-size: 0.8rem;
+  text-transform: lowercase;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background-color: #323437;
+  border: none;
+  border-radius: 4px;
+  color: #d1d0c5;
+  font-size: 0.95rem;
+  box-sizing: border-box;
+  transition: box-shadow 0.2s ease;
+}
+
+.form-group input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(226, 183, 20, 0.3);
+}
+
+.form-group input::placeholder {
+  color: #646669;
+}
+
+.error-message {
+  background-color: rgba(202, 71, 84, 0.1);
+  border: none;
+  color: #ca4754;
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
+.success-message {
+  background-color: rgba(76, 175, 80, 0.1);
+  border: none;
+  color: #4caf50;
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
+.submit-btn {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background-color: #e2b714;
+  border: none;
+  border-radius: 4px;
+  color: #323437;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  margin-top: 0.5rem;
+}
+
+.submit-btn:hover:not(:disabled) {
+  background-color: #d4a912;
+}
+
+.submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.switch-mode {
+  text-align: center;
+  margin-top: 1.25rem;
+  color: #646669;
+  font-size: 0.85rem;
+}
+
+.switch-mode button {
+  background: none;
+  border: none;
+  color: #e2b714;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.switch-mode button:hover {
+  color: #d4a912;
+}
