@@ -5,7 +5,7 @@
 ## 🚀 Demo
 
 Check out the live application here:
-[Link to Live Demo](#) *(https://cactus-profiler-frontend.vercel.app/)*
+[Link to Live Demo](https://cactus-profiler-frontend.vercel.app/)
 
 ## 📸 Screenshots
 
