@@ -8,7 +8,7 @@ const About: React.FC = () => {
         <h1 className="about-title">About This Project</h1>
 
         <section className="about-section">
-          <h2>What is Profiler?</h2>
+          <h2>What is Cactus-Profiler?</h2>
           <p>
             Cactus-Profiler is a keystroke biometrics application that identifies users based on their
             unique typing patterns. Every person has a distinctive way of typing - the rhythm,

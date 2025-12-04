@@ -15,7 +15,7 @@ const Header: React.FC<HeaderProps> = ({ onAuthClick, onAboutClick, showAbout })
     <header className="header">
       <div className="header-left">
         <h1 className="logo" onClick={() => showAbout && onAboutClick()} style={{ cursor: showAbout ? 'pointer' : 'default' }}>
-          profiler
+          cactus-profiler
         </h1>
         <nav className="header-nav">
           <button
