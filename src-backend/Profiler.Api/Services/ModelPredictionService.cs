@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.ML;
 using Profiler.Api.abstractions;
@@ -24,27 +25,39 @@ namespace Profiler.Api.Services
 
     public class ModelPredictionService : IModelPredictionService
     {
-        private readonly MLContext _mlContext;
-        private readonly ILogger<ModelPredictionService> _logger;
+        /// <summary>
+        /// Immutable view of the currently loaded model generation. Swapped atomically
+        /// on reload; in-flight predictions keep using the snapshot they started with.
+        /// </summary>
+        private sealed class ModelSnapshot
+        {
+            public int Version;
+            public List<ITransformer> Models = new();
+            public string[] Labels = Array.Empty<string>();
+            public float Temperature = 1.0f;
+            public float ProbabilityFloor;
+            public NoveltyModel Novelty;
+        }
 
-        // Soft-voting ensemble: one prediction engine per member. A single-model
-        // deployment is just an ensemble of size one.
-        private readonly List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>> _engines = new();
-        private string[] _labels = Array.Empty<string>();
-        private float _temperature = 1.0f;
-        private float _probabilityFloor;
-        private NoveltyModel _novelty;
+        private readonly MLContext _mlContext = new();
+        private readonly ILogger<ModelPredictionService> _logger;
+        private readonly object _lock = new object();
+
+        private ModelSnapshot _snapshot = new();
+
+        // PredictionEngine is not thread-safe, so callers rent an exclusive engine set
+        // per call instead of serializing all inference behind one global lock.
+        // Sets from an older model generation are discarded on return.
+        private readonly ConcurrentBag<(int Version, List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>> Engines)> _enginePool = new();
 
         private readonly string _modelPath = Path.Combine(AppContext.BaseDirectory, "user_typing_model.zip");
         private readonly string _ensembleDir = Path.Combine(AppContext.BaseDirectory, "ml_ensemble");
         private string ManifestPath => Path.Combine(_ensembleDir, "manifest.json");
-        private readonly object _lock = new object();
 
         private const float AuthenticationThreshold = 0.90f;
 
         public ModelPredictionService(ILogger<ModelPredictionService> logger)
         {
-            _mlContext = new MLContext();
             _logger = logger;
             LoadModel();
         }
@@ -53,27 +66,52 @@ namespace Profiler.Api.Services
         {
             lock (_lock)
             {
-                _engines.Clear();
-                _labels = Array.Empty<string>();
-                _temperature = 1.0f;
-                _probabilityFloor = 0f;
-                _novelty = null;
+                var next = new ModelSnapshot { Version = _snapshot.Version + 1 };
 
                 try
                 {
                     if (File.Exists(ManifestPath))
-                        LoadEnsemble();
-                    else if (File.Exists(_modelPath))
-                        LoadSingle();
-                    else
-                        _logger.LogWarning("No model found at {Manifest} or {Model}", ManifestPath, _modelPath);
-
-                    if (_engines.Count > 0)
                     {
-                        _labels = ModelTrainingService.ReadLabels(_engines[0].OutputSchema);
+                        var manifest = JsonSerializer.Deserialize<EnsembleManifest>(File.ReadAllText(ManifestPath));
+                        if (manifest != null)
+                        {
+                            foreach (var member in manifest.Members)
+                            {
+                                var path = Path.Combine(_ensembleDir, member);
+                                if (File.Exists(path))
+                                    next.Models.Add(_mlContext.Model.Load(path, out _));
+                            }
+                            if (manifest.Temperature > 0) next.Temperature = manifest.Temperature;
+                            next.ProbabilityFloor = manifest.ProbabilityFloor;
+                            next.Novelty = manifest.Novelty;
+                        }
+                    }
+                    else if (File.Exists(_modelPath))
+                    {
+                        next.Models.Add(_mlContext.Model.Load(_modelPath, out _));
+                    }
+                    else
+                    {
+                        _logger.LogWarning("No model found at {Manifest} or {Model}", ManifestPath, _modelPath);
+                    }
+
+                    if (next.Models.Count > 0)
+                    {
+                        var firstSet = CreateEngineSet(next.Models);
+                        next.Labels = ModelTrainingService.ReadLabels(firstSet[0].OutputSchema);
+
+                        _snapshot = next;
+                        while (_enginePool.TryTake(out _)) { } // drop stale generations
+                        _enginePool.Add((next.Version, firstSet));
+
                         _logger.LogInformation(
-                            "Loaded {Count} model(s) with {LabelCount} labels (T={Temp:F2}).",
-                            _engines.Count, _labels.Length, _temperature);
+                            "Loaded {Count} model(s), {LabelCount} labels, T={Temp:F2}, open-set={OpenSet}.",
+                            next.Models.Count, next.Labels.Length, next.Temperature, next.Novelty != null);
+                    }
+                    else
+                    {
+                        _snapshot = next;
+                        while (_enginePool.TryTake(out _)) { }
                     }
                 }
                 catch (Exception ex)
@@ -83,95 +121,114 @@ namespace Profiler.Api.Services
             }
         }
 
-        private void LoadEnsemble()
-        {
-            var manifest = JsonSerializer.Deserialize<EnsembleManifest>(File.ReadAllText(ManifestPath));
-            if (manifest == null) return;
-
-            foreach (var member in manifest.Members)
-            {
-                var path = Path.Combine(_ensembleDir, member);
-                if (!File.Exists(path)) continue;
-                var model = _mlContext.Model.Load(path, out _);
-                _engines.Add(_mlContext.Model.CreatePredictionEngine<ProfilingModelInput, ProfilingPrediction>(model));
-            }
-
-            if (manifest.Temperature > 0) _temperature = manifest.Temperature;
-            _probabilityFloor = manifest.ProbabilityFloor;
-            _novelty = manifest.Novelty;
-        }
-
-        private void LoadSingle()
-        {
-            var model = _mlContext.Model.Load(_modelPath, out _);
-            _engines.Add(_mlContext.Model.CreatePredictionEngine<ProfilingModelInput, ProfilingPrediction>(model));
-        }
-
         public void ReloadModel() => LoadModel();
 
         public IdentificationResult IdentifyUser(ProfilingModelInput features)
         {
-            lock (_lock)
+            var snapshot = _snapshot;
+            if (snapshot.Models.Count == 0)
             {
-                if (_engines.Count == 0)
-                {
-                    LoadModel();
-                    if (_engines.Count == 0)
-                        return NotReady();
-                }
-
-                // Average the members' probability vectors (soft voting). Each member
-                // already emits a normalized distribution, so the mean is one too.
-                float[] probabilities = null;
-                int counted = 0;
-                foreach (var engine in _engines)
-                {
-                    var score = engine.Predict(features).Score;
-                    if (score == null || score.Length == 0) continue;
-                    if (probabilities == null) probabilities = new float[score.Length];
-                    if (score.Length != probabilities.Length) continue;
-                    for (int i = 0; i < probabilities.Length; i++) probabilities[i] += score[i];
-                    counted++;
-                }
-
-                if (probabilities == null || counted == 0)
+                LoadModel();
+                snapshot = _snapshot;
+                if (snapshot.Models.Count == 0)
                     return NotReady();
-
-                for (int i = 0; i < probabilities.Length; i++) probabilities[i] /= counted;
-
-                // Calibrate. Score is ALREADY a probability distribution, so this is
-                // temperature scaling (identity at T=1) — NOT another softmax.
-                probabilities = ProbabilityCalibration.TemperatureScale(probabilities, _temperature);
-
-                int maxIndex = 0;
-                for (int i = 1; i < probabilities.Length; i++)
-                    if (probabilities[i] > probabilities[maxIndex]) maxIndex = i;
-
-                float maxScore = probabilities[maxIndex];
-                float entropyScore = CalculateNormalizedEntropy(probabilities);
-                float marginScore = CalculateMarginScore(probabilities);
-
-                // Open-set check: does this sample resemble ANY enrolled user?
-                float noveltyScore = _novelty != null ? NoveltyDetector.Score(_novelty, features) : 0f;
-                bool isNovel =
-                    (_novelty != null && noveltyScore > _novelty.DistanceThreshold)
-                    || (_probabilityFloor > 0 && maxScore < _probabilityFloor);
-
-                string predictedUser = maxIndex < _labels.Length ? _labels[maxIndex] : "Unknown";
-
-                return new IdentificationResult
-                {
-                    PredictedUser = predictedUser,
-                    Confidence = maxScore,
-                    IsAuthenticated = !isNovel && maxScore >= AuthenticationThreshold,
-                    AllProbabilities = probabilities,
-                    AllLabels = _labels,
-                    EntropyScore = entropyScore,
-                    MarginScore = marginScore,
-                    IsNovel = isNovel,
-                    NoveltyScore = noveltyScore
-                };
             }
+
+            var engines = RentEngineSet(snapshot);
+            float[] probabilities;
+            try
+            {
+                probabilities = AverageScores(engines, features);
+            }
+            finally
+            {
+                ReturnEngineSet(snapshot.Version, engines);
+            }
+
+            if (probabilities == null)
+                return NotReady();
+
+            // Calibrate. Score is ALREADY a probability distribution, so this is
+            // temperature scaling (identity at T=1) — NOT another softmax.
+            probabilities = ProbabilityCalibration.TemperatureScale(probabilities, snapshot.Temperature);
+
+            int maxIndex = 0;
+            for (int i = 1; i < probabilities.Length; i++)
+                if (probabilities[i] > probabilities[maxIndex]) maxIndex = i;
+
+            float maxScore = probabilities[maxIndex];
+            float noveltyScore = snapshot.Novelty != null
+                ? NoveltyDetector.Score(snapshot.Novelty, features)
+                : 0f;
+            bool isNovel =
+                (snapshot.Novelty != null && noveltyScore > snapshot.Novelty.DistanceThreshold)
+                || (snapshot.ProbabilityFloor > 0 && maxScore < snapshot.ProbabilityFloor);
+
+            return new IdentificationResult
+            {
+                PredictedUser = maxIndex < snapshot.Labels.Length ? snapshot.Labels[maxIndex] : "Unknown",
+                Confidence = maxScore,
+                IsAuthenticated = !isNovel && maxScore >= AuthenticationThreshold,
+                AllProbabilities = probabilities,
+                AllLabels = snapshot.Labels,
+                EntropyScore = CalculateNormalizedEntropy(probabilities),
+                MarginScore = CalculateMarginScore(probabilities),
+                IsNovel = isNovel,
+                NoveltyScore = noveltyScore
+            };
+        }
+
+        // ---- Engine pool ----
+
+        private List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>> CreateEngineSet(
+            List<ITransformer> models)
+        {
+            var set = new List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>>(models.Count);
+            foreach (var model in models)
+                set.Add(_mlContext.Model.CreatePredictionEngine<ProfilingModelInput, ProfilingPrediction>(model));
+            return set;
+        }
+
+        private List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>> RentEngineSet(ModelSnapshot snapshot)
+        {
+            while (_enginePool.TryTake(out var entry))
+            {
+                if (entry.Version == snapshot.Version)
+                    return entry.Engines;
+                // Older generation: drop it and keep looking.
+            }
+            return CreateEngineSet(snapshot.Models);
+        }
+
+        private void ReturnEngineSet(
+            int version, List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>> engines)
+        {
+            if (version == _snapshot.Version)
+                _enginePool.Add((version, engines));
+        }
+
+        /// <summary>
+        /// Soft voting: average the members' probability vectors. Each member emits a
+        /// normalized distribution, so the mean is one too.
+        /// </summary>
+        private static float[] AverageScores(
+            List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>> engines,
+            ProfilingModelInput features)
+        {
+            float[] acc = null;
+            int counted = 0;
+            foreach (var engine in engines)
+            {
+                var score = engine.Predict(features).Score;
+                if (score == null || score.Length == 0) continue;
+                if (acc == null) acc = new float[score.Length];
+                if (score.Length != acc.Length) continue;
+                for (int i = 0; i < acc.Length; i++) acc[i] += score[i];
+                counted++;
+            }
+            if (acc == null || counted == 0) return null;
+            for (int i = 0; i < acc.Length; i++) acc[i] /= counted;
+            return acc;
         }
 
         private IdentificationResult NotReady() => new IdentificationResult
@@ -206,19 +263,27 @@ namespace Profiler.Api.Services
 
         public void SetTemperature(float temperature)
         {
-            if (temperature > 0)
+            if (temperature <= 0) return;
+            lock (_lock)
             {
-                lock (_lock) _temperature = temperature;
-                _logger.LogInformation("Temperature set to {Temperature}", temperature);
+                var current = _snapshot;
+                _snapshot = new ModelSnapshot
+                {
+                    Version = current.Version, // engines stay valid: models unchanged
+                    Models = current.Models,
+                    Labels = current.Labels,
+                    Temperature = temperature,
+                    ProbabilityFloor = current.ProbabilityFloor,
+                    Novelty = current.Novelty
+                };
             }
+            _logger.LogInformation("Temperature set to {Temperature}", temperature);
         }
 
         public (int LabelCount, string[] Labels, float Temperature) GetModelInfo()
         {
-            lock (_lock)
-            {
-                return (_labels.Length, _labels, _temperature);
-            }
+            var snapshot = _snapshot;
+            return (snapshot.Labels.Length, snapshot.Labels, snapshot.Temperature);
         }
     }
 }

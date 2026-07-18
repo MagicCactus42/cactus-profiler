@@ -72,6 +72,13 @@ public class EndToEndTests
         for (int i = 0; i < 4; i++)
             verdict = unknownSvc.AddEvidence("imp", impostorResult.AllLabels, impostorResult.AllProbabilities, isNovel: true);
         Assert.Equal("Unknown", verdict.user);
+
+        // Concurrency: the engine pool must give consistent results under parallel load.
+        Parallel.For(0, 16, _ =>
+        {
+            var r = prediction.IdentifyUser(features);
+            Assert.Equal(result.PredictedUser, r.PredictedUser);
+        });
     }
 
     [Fact]
