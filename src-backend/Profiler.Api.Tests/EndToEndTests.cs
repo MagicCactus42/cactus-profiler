@@ -65,6 +65,13 @@ public class EndToEndTests
         Assert.True(impostorResult.IsNovel,
             $"impostor not flagged (dist {impostorResult.NoveltyScore:F3})");
         Assert.False(impostorResult.IsAuthenticated);
+
+        // A majority-novel session reports Unknown through evidence fusion.
+        var unknownSvc = new IdentificationSessionService(new MemoryCache(new MemoryCacheOptions()));
+        (string user, float conf, int n) verdict = default;
+        for (int i = 0; i < 4; i++)
+            verdict = unknownSvc.AddEvidence("imp", impostorResult.AllLabels, impostorResult.AllProbabilities, isNovel: true);
+        Assert.Equal("Unknown", verdict.user);
     }
 
     [Fact]

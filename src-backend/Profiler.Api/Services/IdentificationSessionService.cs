@@ -16,6 +16,7 @@ namespace Profiler.Api.Services
     {
         public double[] LogPosterior { get; set; }   // Unnormalized running sum of log-likelihoods.
         public int SampleCount { get; set; }
+        public int NovelSampleCount { get; set; }    // Samples flagged as matching no enrolled user.
         public DateTime LastUpdate { get; set; }
         public string[] Labels { get; set; }
         public HashSet<int> EliminatedIndices { get; set; } = new HashSet<int>();
@@ -46,7 +47,7 @@ namespace Profiler.Api.Services
         }
 
         public (string BestUser, float Confidence, int SamplesCount) AddEvidence(
-            string sessionId, string[] allLabels, float[] newScores)
+            string sessionId, string[] allLabels, float[] newScores, bool isNovel = false)
         {
             int effectiveLength = Math.Min(allLabels.Length, newScores.Length);
             if (effectiveLength == 0)
@@ -71,11 +72,25 @@ namespace Profiler.Api.Services
                 state.LogPosterior[i] += Math.Log(Math.Max(PerSampleFloor, normalized[i]));
 
             state.SampleCount++;
+            if (isNovel) state.NovelSampleCount++;
             state.LastUpdate = DateTime.UtcNow;
             state.Labels = allLabels.Take(effectiveLength).ToArray();
 
             if (state.SampleCount >= EliminationStartsAtSample)
                 PerformElimination(state);
+
+            // Open-set verdict: when most samples in this session look like no
+            // enrolled user, report Unknown rather than the least-bad known user.
+            // Confidence carries the novel fraction.
+            if (state.SampleCount >= EliminationStartsAtSample
+                && state.NovelSampleCount * 2 > state.SampleCount)
+            {
+                float novelRatio = (float)state.NovelSampleCount / state.SampleCount;
+                _logger?.LogInformation(
+                    "Session {Session}: {Novel}/{Total} samples novel -> Unknown",
+                    sessionId, state.NovelSampleCount, state.SampleCount);
+                return ("Unknown", novelRatio, state.SampleCount);
+            }
 
             var (posterior, activeIndices) = ComputePosterior(state);
             if (activeIndices.Length == 0)

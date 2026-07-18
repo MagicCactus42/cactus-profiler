@@ -46,6 +46,36 @@ public class BayesianFusionTests
     }
 
     [Fact]
+    public void MajorityNovelSamples_ReportUnknown()
+    {
+        var svc = NewService();
+        var labels = new[] { "A", "B" };
+        var scores = new[] { 0.6f, 0.4f };
+
+        svc.AddEvidence("s-novel", labels, scores, isNovel: true);
+        svc.AddEvidence("s-novel", labels, scores, isNovel: true);
+        var (user, conf, count) = svc.AddEvidence("s-novel", labels, scores, isNovel: true);
+
+        Assert.Equal("Unknown", user);
+        Assert.Equal(3, count);
+        Assert.Equal(1.0f, conf, precision: 2); // confidence = novel fraction
+    }
+
+    [Fact]
+    public void MinorityNovelSamples_StillIdentifyUser()
+    {
+        var svc = NewService();
+        var labels = new[] { "A", "B" };
+        var scores = new[] { 0.7f, 0.3f };
+
+        svc.AddEvidence("s-mixed", labels, scores, isNovel: true);
+        svc.AddEvidence("s-mixed", labels, scores);
+        var (user, _, _) = svc.AddEvidence("s-mixed", labels, scores);
+
+        Assert.Equal("A", user); // 1 novel of 3 is not a majority
+    }
+
+    [Fact]
     public void ConflictingEvidence_StaysUncertain()
     {
         var svc = NewService();

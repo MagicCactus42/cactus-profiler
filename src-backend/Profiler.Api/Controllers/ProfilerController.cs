@@ -144,8 +144,22 @@ namespace Profiler.Api.Controllers
             var (bestUser, confidence, samples) = _sessionService.AddEvidence(
                 request.SessionId,
                 modelLabels,
-                predictionResult.AllProbabilities
+                predictionResult.AllProbabilities,
+                predictionResult.IsNovel
             );
+
+            // Open-set outcome: the session's evidence matches no enrolled user.
+            if (bestUser == "Unknown")
+            {
+                return Ok(new IdentifyResponseDto
+                {
+                    User = "Unknown",
+                    Confidence = confidence * 100,
+                    Message = "Typing pattern does not match any enrolled user.",
+                    Status = "Unknown",
+                    SessionId = request.SessionId
+                });
+            }
 
             float threshold = samples > 3 ? 0.75f : 0.90f;
             bool isAuthenticated = confidence > threshold;
