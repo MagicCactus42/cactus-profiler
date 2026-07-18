@@ -54,6 +54,17 @@ public class EndToEndTests
 
         Assert.Equal(target.Nick, finalUser);
         Assert.True(finalConf > 0.75f, $"fused confidence too low: {finalConf:F3}");
+
+        // Open-set: a genuine enrolled user is not flagged as novel...
+        Assert.False(result.IsNovel, $"genuine sample flagged novel (dist {result.NoveltyScore:F3})");
+
+        // ...but an impostor whose timing matches no enrolled user is, even though
+        // the closed-set softmax still names some nearest user.
+        var impostorSession = SyntheticData.BuildSession(baseDwell: 320, baseFlight: 500, variance: 40, seed: 31337);
+        var impostorResult = prediction.IdentifyUser(extractor.ExtractFeatures(impostorSession));
+        Assert.True(impostorResult.IsNovel,
+            $"impostor not flagged (dist {impostorResult.NoveltyScore:F3})");
+        Assert.False(impostorResult.IsAuthenticated);
     }
 
     [Fact]

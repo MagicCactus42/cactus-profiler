@@ -23,6 +23,8 @@ namespace Profiler.Api.Services
         public float Temperature { get; set; } = 1.0f;
         public int EnsembleSize { get; set; } = 1;
         public bool GroupAwareValidation { get; set; }
+        public float NoveltyThreshold { get; set; }
+        public float ProbabilityFloor { get; set; }
         public DateTime TrainedAt { get; set; }
         public Dictionary<string, int> SamplesPerUser { get; set; }
         public Dictionary<string, double> PerClassAccuracy { get; set; }
@@ -39,6 +41,11 @@ namespace Profiler.Api.Services
         public string Algorithm { get; set; }
         public int FeatureCount { get; set; }
         public DateTime TrainedAt { get; set; }
+
+        // Open-set additions. Both default to "disabled" so manifests written by
+        // older builds keep loading (Novelty null, floor 0 = no probability gate).
+        public NoveltyModel Novelty { get; set; }
+        public float ProbabilityFloor { get; set; }
     }
 
     public class ModelTrainingService : IModelTrainingService
@@ -123,8 +130,7 @@ namespace Profiler.Api.Services
                 result = TrainSingleModel(dataView, featureColumnNames, trainingData, validUsers);
             }
 
-            SaveEnsemble(result.Members, result.Temperature, result.Algorithm,
-                dataView.Schema, featureColumnNames.Length);
+            SaveEnsemble(result, dataView.Schema, featureColumnNames.Length);
             SaveTrainingMetrics(result.Metrics);
 
             _logger?.LogInformation(
@@ -167,6 +173,8 @@ namespace Profiler.Api.Services
             public float Temperature { get; set; }
             public string Algorithm { get; set; }
             public TrainingMetrics Metrics { get; set; }
+            public NoveltyModel Novelty { get; set; }
+            public float ProbabilityFloor { get; set; }
         }
 
         // ---- Feature extraction & augmentation ----
@@ -303,6 +311,7 @@ namespace Profiler.Api.Services
             }
 
             float temperature = 1.0f;
+            float probabilityFloor = 0f;
             TrainingMetrics valMetrics = null;
 
             if (valStageMembers.Count > 0)
@@ -329,10 +338,11 @@ namespace Profiler.Api.Services
                 }
 
                 temperature = ProbabilityCalibration.FitTemperature(samples);
+                probabilityFloor = ComputeProbabilityFloor(samples, temperature);
                 valMetrics = ScoreEnsemble(samples, labels.Length, temperature);
                 _logger?.LogInformation(
-                    "Ensemble validation: MicroAcc={Micro:P2}, MacroAcc={Macro:P2}, LogLoss={LogLoss:F4}, T={Temp:F2}",
-                    valMetrics.MicroAccuracy, valMetrics.MacroAccuracy, valMetrics.LogLoss, temperature);
+                    "Ensemble validation: MicroAcc={Micro:P2}, MacroAcc={Macro:P2}, LogLoss={LogLoss:F4}, T={Temp:F2}, ProbFloor={Floor:F2}",
+                    valMetrics.MicroAccuracy, valMetrics.MacroAccuracy, valMetrics.LogLoss, temperature, probabilityFloor);
             }
 
             // Retrain every member on the full dataset for the shipped model.
@@ -346,11 +356,15 @@ namespace Profiler.Api.Services
             if (finalMembers.Count == 0)
                 throw new Exception("All ensemble members failed to train.");
 
+            var novelty = NoveltyDetector.Fit(trainingData, featureColumnNames);
+
             var metrics = valMetrics ?? new TrainingMetrics();
             metrics.Algorithm = $"SoftVote[{string.Join(",", trainers.Select(t => t.Name))}]";
             metrics.EnsembleSize = finalMembers.Count;
             metrics.Temperature = temperature;
             metrics.GroupAwareValidation = true;
+            metrics.NoveltyThreshold = novelty?.DistanceThreshold ?? 0;
+            metrics.ProbabilityFloor = probabilityFloor;
             FillCommonMetrics(metrics, trainingData, validUsers, featureColumnNames.Length);
 
             return new EnsembleTrainResult
@@ -358,8 +372,36 @@ namespace Profiler.Api.Services
                 Members = finalMembers,
                 Temperature = temperature,
                 Algorithm = metrics.Algorithm,
-                Metrics = metrics
+                Metrics = metrics,
+                Novelty = novelty,
+                ProbabilityFloor = probabilityFloor
             };
+        }
+
+        /// <summary>
+        /// 5th-percentile calibrated top-probability of CORRECT validation predictions
+        /// (with a safety margin). A live prediction whose top probability falls below
+        /// this floor looks unlike anything the model got right in validation, which
+        /// supports flagging the sample as an impostor. 0 disables the gate.
+        /// </summary>
+        private static float ComputeProbabilityFloor(
+            List<(float[] Probabilities, int TrueIndex)> samples, float temperature)
+        {
+            var correctTops = new List<float>();
+            foreach (var (probs, trueIndex) in samples)
+            {
+                if (trueIndex < 0 || trueIndex >= probs.Length) continue;
+                var q = ProbabilityCalibration.TemperatureScale(probs, temperature);
+                int arg = 0;
+                for (int i = 1; i < q.Length; i++) if (q[i] > q[arg]) arg = i;
+                if (arg == trueIndex) correctTops.Add(q[arg]);
+            }
+
+            if (correctTops.Count < 10) return 0f;
+
+            correctTops.Sort();
+            float p05 = correctTops[(int)(0.05 * (correctTops.Count - 1))];
+            return Math.Clamp(p05 * 0.9f, 0f, 0.6f);
         }
 
         // ---- Single-model training (small datasets) ----
@@ -401,6 +443,8 @@ namespace Profiler.Api.Services
             }
 
             var finalModel = pipeline.Fit(dataView);
+            var novelty = NoveltyDetector.Fit(trainingData, featureColumnNames);
+            metrics.NoveltyThreshold = novelty?.DistanceThreshold ?? 0;
             FillCommonMetrics(metrics, trainingData, validUsers, featureColumnNames.Length);
 
             return new EnsembleTrainResult
@@ -408,7 +452,9 @@ namespace Profiler.Api.Services
                 Members = new List<ITransformer> { finalModel },
                 Temperature = 1.0f,
                 Algorithm = metrics.Algorithm,
-                Metrics = metrics
+                Metrics = metrics,
+                Novelty = novelty,
+                ProbabilityFloor = 0f
             };
         }
 
@@ -499,9 +545,7 @@ namespace Profiler.Api.Services
 
         // ---- Persistence ----
 
-        private void SaveEnsemble(
-            List<ITransformer> members, float temperature, string algorithm,
-            DataViewSchema schema, int featureCount)
+        private void SaveEnsemble(EnsembleTrainResult result, DataViewSchema schema, int featureCount)
         {
             Directory.CreateDirectory(_ensembleDir);
 
@@ -512,12 +556,15 @@ namespace Profiler.Api.Services
 
             var manifest = new EnsembleManifest
             {
-                Temperature = temperature,
-                Algorithm = algorithm,
+                Temperature = result.Temperature,
+                Algorithm = result.Algorithm,
                 FeatureCount = featureCount,
-                TrainedAt = DateTime.UtcNow
+                TrainedAt = DateTime.UtcNow,
+                Novelty = result.Novelty,
+                ProbabilityFloor = result.ProbabilityFloor
             };
 
+            var members = result.Members;
             for (int i = 0; i < members.Count; i++)
             {
                 string file = $"member_{i}.zip";

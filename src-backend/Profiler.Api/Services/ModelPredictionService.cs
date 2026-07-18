@@ -14,6 +14,12 @@ namespace Profiler.Api.Services
         public string[] AllLabels { get; set; }
         public float EntropyScore { get; set; }
         public float MarginScore { get; set; }
+
+        // Open-set: true when the sample doesn't resemble ANY enrolled user
+        // (distance to every user centroid above threshold, or calibrated top
+        // probability below the validation floor).
+        public bool IsNovel { get; set; }
+        public float NoveltyScore { get; set; }
     }
 
     public class ModelPredictionService : IModelPredictionService
@@ -26,6 +32,8 @@ namespace Profiler.Api.Services
         private readonly List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>> _engines = new();
         private string[] _labels = Array.Empty<string>();
         private float _temperature = 1.0f;
+        private float _probabilityFloor;
+        private NoveltyModel _novelty;
 
         private readonly string _modelPath = Path.Combine(AppContext.BaseDirectory, "user_typing_model.zip");
         private readonly string _ensembleDir = Path.Combine(AppContext.BaseDirectory, "ml_ensemble");
@@ -48,6 +56,8 @@ namespace Profiler.Api.Services
                 _engines.Clear();
                 _labels = Array.Empty<string>();
                 _temperature = 1.0f;
+                _probabilityFloor = 0f;
+                _novelty = null;
 
                 try
                 {
@@ -87,6 +97,8 @@ namespace Profiler.Api.Services
             }
 
             if (manifest.Temperature > 0) _temperature = manifest.Temperature;
+            _probabilityFloor = manifest.ProbabilityFloor;
+            _novelty = manifest.Novelty;
         }
 
         private void LoadSingle()
@@ -139,17 +151,25 @@ namespace Profiler.Api.Services
                 float entropyScore = CalculateNormalizedEntropy(probabilities);
                 float marginScore = CalculateMarginScore(probabilities);
 
+                // Open-set check: does this sample resemble ANY enrolled user?
+                float noveltyScore = _novelty != null ? NoveltyDetector.Score(_novelty, features) : 0f;
+                bool isNovel =
+                    (_novelty != null && noveltyScore > _novelty.DistanceThreshold)
+                    || (_probabilityFloor > 0 && maxScore < _probabilityFloor);
+
                 string predictedUser = maxIndex < _labels.Length ? _labels[maxIndex] : "Unknown";
 
                 return new IdentificationResult
                 {
                     PredictedUser = predictedUser,
                     Confidence = maxScore,
-                    IsAuthenticated = maxScore >= AuthenticationThreshold,
+                    IsAuthenticated = !isNovel && maxScore >= AuthenticationThreshold,
                     AllProbabilities = probabilities,
                     AllLabels = _labels,
                     EntropyScore = entropyScore,
-                    MarginScore = marginScore
+                    MarginScore = marginScore,
+                    IsNovel = isNovel,
+                    NoveltyScore = noveltyScore
                 };
             }
         }
