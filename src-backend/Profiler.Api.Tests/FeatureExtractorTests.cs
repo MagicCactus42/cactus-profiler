@@ -42,6 +42,25 @@ public class FeatureExtractorTests
     }
 
     [Fact]
+    public void TypingSpeed_CountsKeyPressesPerMinute()
+    {
+        // 6 keys, 100ms dwell + 50ms gap: first keydown t=0, last keyup t=850.
+        var events = new List<KeystrokeEvent>();
+        long t = 0;
+        foreach (char c in "abcdef")
+        {
+            events.Add(new KeystrokeEvent { Key = c.ToString(), Type = "keydown", Timestamp = t });
+            t += 100;
+            events.Add(new KeystrokeEvent { Key = c.ToString(), Type = "keyup", Timestamp = t });
+            t += 50;
+        }
+
+        var f = _extractor.ExtractFeatures(events, "u1");
+        float expected = (float)(6 / (850 / 60000.0)); // 6 presses over 850ms
+        Assert.Equal(expected, f.TypingSpeedKPM, precision: 1);
+    }
+
+    [Fact]
     public void TooFewEvents_ReturnsDefaultWithUserId()
     {
         var f = _extractor.ExtractFeatures(new List<KeystrokeEvent>(), "u9");

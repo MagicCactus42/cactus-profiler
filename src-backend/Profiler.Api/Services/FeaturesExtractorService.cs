@@ -303,8 +303,11 @@ namespace Profiler.Api.Services
             input.MeanUpDownFlightTime = SafeAverage(udFlights);
             input.UpDownFlightStdDev = (float)Math.Sqrt(SafeVariance(udFlights));
 
+            // Keystrokes per minute from actual key presses (the old events/2 heuristic
+            // miscounted whenever keydown/keyup events were unbalanced).
+            int totalKeystrokes = sortedEvents.Count(e => e.Type == "keydown");
             double totalMins = (sortedEvents.Last().Timestamp - sortedEvents.First().Timestamp) / 60000.0;
-            input.TypingSpeedKPM = totalMins > 0 ? (float)((sortedEvents.Count / 2) / totalMins) : 0;
+            input.TypingSpeedKPM = totalMins > 0 ? (float)(totalKeystrokes / totalMins) : 0;
 
             // === STATISTICAL VARIANCE FEATURES ===
             input.DwellTimeVariance = SafeVariance(allDwellTimes);
@@ -339,7 +342,6 @@ namespace Profiler.Api.Services
             input.MeanPauseDuration = SafeAverage(longPauses.Concat(mediumPauses).ToList());
 
             // === ERROR FEATURES ===
-            int totalKeystrokes = sortedEvents.Count(e => e.Type == "keydown");
             input.BackspaceFrequency = totalKeystrokes > 0 ? (float)backspaceTimestamps.Count / totalKeystrokes : 0;
             input.ConsecutiveBackspaces = SafeAverage(consecutiveBackspaceCounts.Select(x => (float)x).ToList());
 
