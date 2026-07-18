@@ -176,5 +176,14 @@ namespace Profiler.Api.Controllers
                 SessionId = request.SessionId
             });
         }
+
+        [HttpGet("metrics")]
+        public IActionResult GetTrainingMetrics([FromServices] IModelTrainingService trainingService)
+        {
+            var metrics = trainingService.GetLastTrainingMetrics();
+            if (metrics == null)
+                return NotFound(new { message = "No training metrics available yet. Train the model first." });
+            return Ok(metrics);
+        }
     }
 }
