@@ -29,7 +29,11 @@ The system captures various typing metrics including:
 * **⚡ Typing speed** - words per minute and characters per second.
 * **🎵 Rhythm patterns** - the consistency and variation in typing cadence.
 
-These features are processed by a machine learning model that learns to recognize individual typing patterns and can identify users with high accuracy.
+These features are processed by a **soft-voting ensemble** (two LightGBM configurations plus an SDCA maximum-entropy model) whose probabilities are **temperature-calibrated** on held-out validation data. Model quality is measured with **group-aware validation** so augmented windows from one session never leak across the train/validation split, keeping the reported accuracy honest.
+
+Across multiple typing samples, evidence is combined with **Bayesian sequential fusion** (accumulating per-sample log-likelihoods), so confidence grows as consistent evidence arrives rather than relying on hand-tuned score boosts.
+
+The engine is also **open-set**: a centroid-based novelty detector measures how far a sample sits from every enrolled user's typing profile. Someone who isn't in the system is reported as **Unknown** instead of being forced onto the nearest enrolled user — a failure mode every closed-set classifier has.
 
 ## 🕵️‍♂️ Progressive Identification
 
@@ -46,7 +50,7 @@ The incognito mode uses a progressive elimination algorithm. As you type more se
 | :--- | :--- |
 | **Frontend** ⚛️ | React + TypeScript |
 | **Backend** ⚙️ | .NET 10 / ASP.NET Core |
-| **ML Framework** 🧠 | ML.NET (LightGBM) |
+| **ML Framework** 🧠 | ML.NET — soft-voting ensemble (LightGBM + SDCA) with temperature calibration |
 | **Database** 🗄️ | PostgreSQL |
 
 ## 🔒 Privacy
