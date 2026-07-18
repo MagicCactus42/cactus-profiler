@@ -197,5 +197,10 @@ namespace Profiler.Api.Models
         // so this tells the model how much to trust the n-graph features.
         public float ObservedDigraphFraction { get; set; }
         public float ObservedTrigraphFraction { get; set; }
+
+        // Per-example training weight (inverse class frequency). NOT a feature — it is
+        // excluded from the feature column list and wired to the trainers' example-weight
+        // column so under-represented users aren't drowned out. Unused at predict time.
+        public float Weight { get; set; }
     }
 }

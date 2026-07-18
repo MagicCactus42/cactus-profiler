@@ -106,6 +106,8 @@ namespace Profiler.Api.Services
             _logger?.LogInformation("Training with {SampleCount} samples from {UserCount} users",
                 trainingData.Count, validUsers.Count);
 
+            ApplyExampleWeights(trainingData);
+
             IDataView dataView = _mlContext.Data.LoadFromEnumerable(trainingData);
 
             var featureColumnNames = GetFeatureColumnNames();
@@ -135,11 +137,28 @@ namespace Profiler.Api.Services
 
         public static string[] GetFeatureColumnNames()
         {
+            // Weight is a float column but carries per-example training weight,
+            // not a biometric signal — it must never enter the feature vector.
             return typeof(ProfilingModelInput)
                 .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => p.PropertyType == typeof(float))
+                .Where(p => p.PropertyType == typeof(float)
+                            && p.Name != nameof(ProfilingModelInput.Weight))
                 .Select(p => p.Name)
                 .ToArray();
+        }
+
+        /// <summary>
+        /// Inverse class-frequency example weights (normalized to mean 1.0), so users
+        /// with fewer sessions still shape the decision boundary.
+        /// </summary>
+        public static void ApplyExampleWeights(List<ProfilingModelInput> trainingData)
+        {
+            if (trainingData.Count == 0) return;
+
+            var counts = trainingData.GroupBy(d => d.UserId).ToDictionary(g => g.Key, g => g.Count());
+            int classes = counts.Count;
+            foreach (var d in trainingData)
+                d.Weight = (float)(trainingData.Count / (double)(classes * counts[d.UserId]));
         }
 
         private class EnsembleTrainResult
@@ -248,14 +267,17 @@ namespace Profiler.Api.Services
             {
                 ("LightGBM-Wide", _mlContext.MulticlassClassification.Trainers.LightGbm(
                     labelColumnName: "Label", featureColumnName: "Features",
+                    exampleWeightColumnName: nameof(ProfilingModelInput.Weight),
                     numberOfLeaves: 63, numberOfIterations: 200, learningRate: 0.1,
                     minimumExampleCountPerLeaf: 1)),
                 ("LightGBM-Deep", _mlContext.MulticlassClassification.Trainers.LightGbm(
                     labelColumnName: "Label", featureColumnName: "Features",
+                    exampleWeightColumnName: nameof(ProfilingModelInput.Weight),
                     numberOfLeaves: 31, numberOfIterations: 400, learningRate: 0.03,
                     minimumExampleCountPerLeaf: 1)),
                 ("SDCA-MaxEnt", _mlContext.MulticlassClassification.Trainers.SdcaMaximumEntropy(
                     labelColumnName: "Label", featureColumnName: "Features",
+                    exampleWeightColumnName: nameof(ProfilingModelInput.Weight),
                     maximumNumberOfIterations: 300)),
             };
         }
@@ -348,6 +370,7 @@ namespace Profiler.Api.Services
         {
             var trainer = _mlContext.MulticlassClassification.Trainers.LightGbm(
                 labelColumnName: "Label", featureColumnName: "Features",
+                exampleWeightColumnName: nameof(ProfilingModelInput.Weight),
                 numberOfLeaves: 31, numberOfIterations: 300, learningRate: 0.05,
                 minimumExampleCountPerLeaf: 1);
             var pipeline = BuildMemberPipeline(featureColumnNames, trainer);
