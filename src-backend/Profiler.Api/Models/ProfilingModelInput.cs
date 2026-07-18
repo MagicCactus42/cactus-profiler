@@ -7,6 +7,13 @@ namespace Profiler.Api.Models
         [ColumnName("Label")]
         public string UserId { get; set; }
 
+        // Non-feature grouping key. Excluded from the training feature set
+        // (it is a string, and feature columns are selected by float type).
+        // Holds the source session id so group-aware train/validation splitting
+        // can keep all augmented windows of one session on the same side of the
+        // split and avoid data leakage. Unused at prediction time.
+        public string GroupKey { get; set; } = string.Empty;
+
         // === CORE TIMING FEATURES ===
         public float MeanDwellTime { get; set; }
         public float MeanFlightTime { get; set; }
