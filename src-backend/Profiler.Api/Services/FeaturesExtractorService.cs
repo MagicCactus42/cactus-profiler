@@ -81,6 +81,10 @@ namespace Profiler.Api.Services
             var allFlightTimes = new List<float>();
             var allKeypressIntervals = new List<float>();
 
+            // Completed (keydown, keyup) spans, used to compute true release-to-press
+            // flight times in a second pass (handles key rollover correctly).
+            var keystrokeSpans = new List<(long Down, long Up)>();
+
             // Hand and finger tracking
             var leftHandDwells = new List<float>();
             var rightHandDwells = new List<float>();
@@ -232,8 +236,12 @@ namespace Profiler.Api.Services
                 }
                 else if (ev.Type == "keyup" && activeKeys.ContainsKey(key))
                 {
-                    long duration = ev.Timestamp - activeKeys[key];
+                    long downTime = activeKeys[key];
+                    long duration = ev.Timestamp - downTime;
                     activeKeys.Remove(key);
+
+                    if (ev.Timestamp > downTime)
+                        keystrokeSpans.Add((downTime, ev.Timestamp));
 
                     if (duration > 0 && duration < MaxValidIntervalMs)
                     {
@@ -281,6 +289,19 @@ namespace Profiler.Api.Services
             // === CORE TIMING FEATURES ===
             input.MeanDwellTime = SafeAverage(allDwellTimes);
             input.MeanFlightTime = SafeAverage(allFlightTimes);
+
+            // True release-to-press flight times (second pass over ordered spans).
+            var udFlights = new List<float>();
+            var orderedSpans = keystrokeSpans.OrderBy(s => s.Down).ToList();
+            for (int s = 1; s < orderedSpans.Count; s++)
+            {
+                float rp = orderedSpans[s].Down - orderedSpans[s - 1].Up;
+                // Keep rollover (negative) up to a floor, drop long idle gaps.
+                if (rp > -MaxValidIntervalMs && rp < MaxValidIntervalMs)
+                    udFlights.Add(rp);
+            }
+            input.MeanUpDownFlightTime = SafeAverage(udFlights);
+            input.UpDownFlightStdDev = (float)Math.Sqrt(SafeVariance(udFlights));
 
             double totalMins = (sortedEvents.Last().Timestamp - sortedEvents.First().Timestamp) / 60000.0;
             input.TypingSpeedKPM = totalMins > 0 ? (float)((sortedEvents.Count / 2) / totalMins) : 0;

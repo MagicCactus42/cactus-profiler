@@ -12,6 +12,13 @@ namespace Profiler.Api.Models
         public float MeanFlightTime { get; set; }
         public float TypingSpeedKPM { get; set; }
 
+        // True release-to-press flight time (up-down latency): the gap between
+        // releasing one key and pressing the next. This is "flight time" in the
+        // classical keystroke-dynamics sense (MeanFlightTime above is actually
+        // press-to-press latency). Can be negative under key rollover.
+        public float MeanUpDownFlightTime { get; set; }
+        public float UpDownFlightStdDev { get; set; }
+
         // === STATISTICAL VARIANCE FEATURES ===
         // Variance captures consistency - more discriminative than means alone
         public float DwellTimeVariance { get; set; }
