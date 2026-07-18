@@ -1,5 +1,5 @@
+using System.Text.Json;
 using Microsoft.ML;
-using Microsoft.ML.Data;
 using Profiler.Api.abstractions;
 using Profiler.Api.Models;
 
@@ -20,19 +20,18 @@ namespace Profiler.Api.Services
     {
         private readonly MLContext _mlContext;
         private readonly ILogger<ModelPredictionService> _logger;
-        private ITransformer _trainedModel;
-        private PredictionEngine<ProfilingModelInput, ProfilingPrediction> _predictionEngine;
-        private string[] _labels;
-        private readonly string _modelPath = Path.Combine(AppContext.BaseDirectory, "user_typing_model.zip");
-        private readonly object _lock = new object();
 
-        // Temperature scaling for calibration (lower = more confident, higher = less confident)
-        // Start with 1.0 (no scaling), can be tuned based on validation data
+        // Soft-voting ensemble: one prediction engine per member. A single-model
+        // deployment is just an ensemble of size one.
+        private readonly List<PredictionEngine<ProfilingModelInput, ProfilingPrediction>> _engines = new();
+        private string[] _labels = Array.Empty<string>();
         private float _temperature = 1.0f;
 
-        // Confidence thresholds
-        private const float HighConfidenceThreshold = 0.85f;
-        private const float MediumConfidenceThreshold = 0.70f;
+        private readonly string _modelPath = Path.Combine(AppContext.BaseDirectory, "user_typing_model.zip");
+        private readonly string _ensembleDir = Path.Combine(AppContext.BaseDirectory, "ml_ensemble");
+        private string ManifestPath => Path.Combine(_ensembleDir, "manifest.json");
+        private readonly object _lock = new object();
+
         private const float AuthenticationThreshold = 0.90f;
 
         public ModelPredictionService(ILogger<ModelPredictionService> logger)
@@ -46,232 +45,159 @@ namespace Profiler.Api.Services
         {
             lock (_lock)
             {
-                if (File.Exists(_modelPath))
-                {
-                    try
-                    {
-                        _trainedModel = _mlContext.Model.Load(_modelPath, out var modelInputSchema);
-                        _predictionEngine = _mlContext.Model.CreatePredictionEngine<ProfilingModelInput, ProfilingPrediction>(_trainedModel);
-
-                        // Extract labels from model
-                        ExtractLabelsFromModel();
-
-                        _logger.LogInformation("Model loaded successfully with {LabelCount} labels.", _labels?.Length ?? 0);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to load model.");
-                    }
-                }
-                else
-                {
-                    _logger.LogWarning($"Model file not found at: {_modelPath}");
-                }
-            }
-        }
-
-        private void ExtractLabelsFromModel()
-        {
-            try
-            {
-                if (_trainedModel == null) return;
-
-                var schema = _predictionEngine.OutputSchema;
-                var labelColumn = schema.GetColumnOrNull("Score");
-
-                if (labelColumn.HasValue)
-                {
-                    var slotNames = new VBuffer<ReadOnlyMemory<char>>();
-                    labelColumn.Value.GetSlotNames(ref slotNames);
-
-                    var denseSlotNames = slotNames.DenseValues().ToArray();
-                    _labels = new string[denseSlotNames.Length];
-                    for (int i = 0; i < denseSlotNames.Length; i++)
-                    {
-                        _labels[i] = denseSlotNames[i].ToString();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not extract labels from model");
+                _engines.Clear();
                 _labels = Array.Empty<string>();
+                _temperature = 1.0f;
+
+                try
+                {
+                    if (File.Exists(ManifestPath))
+                        LoadEnsemble();
+                    else if (File.Exists(_modelPath))
+                        LoadSingle();
+                    else
+                        _logger.LogWarning("No model found at {Manifest} or {Model}", ManifestPath, _modelPath);
+
+                    if (_engines.Count > 0)
+                    {
+                        _labels = ModelTrainingService.ReadLabels(_engines[0].OutputSchema);
+                        _logger.LogInformation(
+                            "Loaded {Count} model(s) with {LabelCount} labels (T={Temp:F2}).",
+                            _engines.Count, _labels.Length, _temperature);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to load model.");
+                }
             }
         }
 
-        public void ReloadModel()
+        private void LoadEnsemble()
         {
-            LoadModel();
+            var manifest = JsonSerializer.Deserialize<EnsembleManifest>(File.ReadAllText(ManifestPath));
+            if (manifest == null) return;
+
+            foreach (var member in manifest.Members)
+            {
+                var path = Path.Combine(_ensembleDir, member);
+                if (!File.Exists(path)) continue;
+                var model = _mlContext.Model.Load(path, out _);
+                _engines.Add(_mlContext.Model.CreatePredictionEngine<ProfilingModelInput, ProfilingPrediction>(model));
+            }
+
+            if (manifest.Temperature > 0) _temperature = manifest.Temperature;
         }
+
+        private void LoadSingle()
+        {
+            var model = _mlContext.Model.Load(_modelPath, out _);
+            _engines.Add(_mlContext.Model.CreatePredictionEngine<ProfilingModelInput, ProfilingPrediction>(model));
+        }
+
+        public void ReloadModel() => LoadModel();
 
         public IdentificationResult IdentifyUser(ProfilingModelInput features)
         {
             lock (_lock)
             {
-                if (_predictionEngine == null)
+                if (_engines.Count == 0)
                 {
                     LoadModel();
-                    if (_predictionEngine == null)
-                    {
-                        return new IdentificationResult
-                        {
-                            PredictedUser = "ModelNotReady",
-                            Confidence = 0,
-                            AllProbabilities = Array.Empty<float>(),
-                            AllLabels = Array.Empty<string>()
-                        };
-                    }
+                    if (_engines.Count == 0)
+                        return NotReady();
                 }
 
-                var prediction = _predictionEngine.Predict(features);
+                // Average the members' probability vectors (soft voting). Each member
+                // already emits a normalized distribution, so the mean is one too.
+                float[] probabilities = null;
+                int counted = 0;
+                foreach (var engine in _engines)
+                {
+                    var score = engine.Predict(features).Score;
+                    if (score == null || score.Length == 0) continue;
+                    if (probabilities == null) probabilities = new float[score.Length];
+                    if (score.Length != probabilities.Length) continue;
+                    for (int i = 0; i < probabilities.Length; i++) probabilities[i] += score[i];
+                    counted++;
+                }
 
-                // Apply temperature-scaled softmax for better calibration
-                var probabilities = TemperatureScaledSoftmax(prediction.Score, _temperature);
+                if (probabilities == null || counted == 0)
+                    return NotReady();
 
-                // Calculate quality metrics
-                float maxScore = probabilities.Max();
-                int maxIndex = Array.IndexOf(probabilities, maxScore);
+                for (int i = 0; i < probabilities.Length; i++) probabilities[i] /= counted;
+
+                // Calibrate. Score is ALREADY a probability distribution, so this is
+                // temperature scaling (identity at T=1) — NOT another softmax.
+                probabilities = ProbabilityCalibration.TemperatureScale(probabilities, _temperature);
+
+                int maxIndex = 0;
+                for (int i = 1; i < probabilities.Length; i++)
+                    if (probabilities[i] > probabilities[maxIndex]) maxIndex = i;
+
+                float maxScore = probabilities[maxIndex];
                 float entropyScore = CalculateNormalizedEntropy(probabilities);
                 float marginScore = CalculateMarginScore(probabilities);
 
-                // Apply confidence adjustment based on prediction quality
-                float adjustedConfidence = AdjustConfidence(maxScore, entropyScore, marginScore);
-
-                // Determine authentication status
-                bool isAuthenticated = adjustedConfidence >= AuthenticationThreshold;
+                string predictedUser = maxIndex < _labels.Length ? _labels[maxIndex] : "Unknown";
 
                 return new IdentificationResult
                 {
-                    PredictedUser = prediction.PredictedUser,
-                    Confidence = adjustedConfidence,
-                    IsAuthenticated = isAuthenticated,
+                    PredictedUser = predictedUser,
+                    Confidence = maxScore,
+                    IsAuthenticated = maxScore >= AuthenticationThreshold,
                     AllProbabilities = probabilities,
-                    AllLabels = _labels ?? Array.Empty<string>(),
+                    AllLabels = _labels,
                     EntropyScore = entropyScore,
                     MarginScore = marginScore
                 };
             }
         }
 
-        /// <summary>
-        /// Temperature-scaled softmax for probability calibration.
-        /// Lower temperature = sharper distribution (more confident)
-        /// Higher temperature = smoother distribution (less confident)
-        /// </summary>
-        private float[] TemperatureScaledSoftmax(float[] scores, float temperature)
+        private IdentificationResult NotReady() => new IdentificationResult
         {
-            if (scores == null || scores.Length == 0)
-                return Array.Empty<float>();
+            PredictedUser = "ModelNotReady",
+            Confidence = 0,
+            AllProbabilities = Array.Empty<float>(),
+            AllLabels = Array.Empty<string>()
+        };
 
-            // Apply temperature scaling to logits
-            var scaledScores = scores.Select(s => s / temperature).ToArray();
-
-            // Find max for numerical stability
-            double maxScore = scaledScores.Max();
-
-            // Compute exp and sum
-            var exp = scaledScores.Select(x => Math.Exp(x - maxScore)).ToArray();
-            var sum = exp.Sum();
-
-            if (sum == 0 || double.IsNaN(sum) || double.IsInfinity(sum))
-            {
-                // Fallback to uniform distribution
-                return Enumerable.Repeat(1.0f / scores.Length, scores.Length).ToArray();
-            }
-
-            return exp.Select(x => (float)(x / sum)).ToArray();
-        }
-
-        /// <summary>
-        /// Calculate normalized entropy (0 = certain, 1 = maximum uncertainty)
-        /// </summary>
+        /// <summary>Normalized entropy in [0,1]: 0 = certain, 1 = maximally uncertain.</summary>
         private float CalculateNormalizedEntropy(float[] probabilities)
         {
             if (probabilities.Length <= 1) return 0;
 
             float entropy = 0;
             const float epsilon = 1e-10f;
-
             foreach (var p in probabilities)
-            {
-                if (p > epsilon)
-                {
-                    entropy -= p * (float)Math.Log(p);
-                }
-            }
+                if (p > epsilon) entropy -= p * (float)Math.Log(p);
 
             float maxEntropy = (float)Math.Log(probabilities.Length);
             return maxEntropy > 0 ? entropy / maxEntropy : 0;
         }
 
-        /// <summary>
-        /// Calculate margin between top-2 predictions (higher = more confident)
-        /// </summary>
+        /// <summary>Gap between the top two probabilities (larger = more decisive).</summary>
         private float CalculateMarginScore(float[] probabilities)
         {
             if (probabilities.Length < 2) return 1;
-
             var sorted = probabilities.OrderByDescending(p => p).ToArray();
             return sorted[0] - sorted[1];
         }
 
-        /// <summary>
-        /// Adjust confidence based on prediction quality metrics
-        /// </summary>
-        private float AdjustConfidence(float rawConfidence, float entropyScore, float marginScore)
-        {
-            float adjustedConfidence = rawConfidence;
-
-            // Penalize high entropy (uncertain) predictions
-            if (entropyScore > 0.7f)
-            {
-                adjustedConfidence *= 0.85f;
-            }
-            else if (entropyScore > 0.5f)
-            {
-                adjustedConfidence *= 0.92f;
-            }
-
-            // Penalize low margin predictions
-            if (marginScore < 0.1f)
-            {
-                adjustedConfidence *= 0.80f;
-            }
-            else if (marginScore < 0.2f)
-            {
-                adjustedConfidence *= 0.90f;
-            }
-
-            // Boost high-quality predictions
-            if (entropyScore < 0.3f && marginScore > 0.4f)
-            {
-                adjustedConfidence = Math.Min(1.0f, adjustedConfidence * 1.05f);
-            }
-
-            return Math.Max(0, Math.Min(1, adjustedConfidence));
-        }
-
-        /// <summary>
-        /// Set temperature for softmax calibration.
-        /// Can be tuned based on validation performance.
-        /// </summary>
         public void SetTemperature(float temperature)
         {
             if (temperature > 0)
             {
-                _temperature = temperature;
+                lock (_lock) _temperature = temperature;
                 _logger.LogInformation("Temperature set to {Temperature}", temperature);
             }
         }
 
-        /// <summary>
-        /// Get current prediction statistics for monitoring
-        /// </summary>
         public (int LabelCount, string[] Labels, float Temperature) GetModelInfo()
         {
             lock (_lock)
             {
-                return (_labels?.Length ?? 0, _labels ?? Array.Empty<string>(), _temperature);
+                return (_labels.Length, _labels, _temperature);
             }
         }
     }
