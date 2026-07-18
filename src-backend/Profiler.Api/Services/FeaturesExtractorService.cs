@@ -64,6 +64,23 @@ namespace Profiler.Api.Services
             {"Space", "thumb"}, {" ", "thumb"}
         };
 
+        // Digraphs/trigraphs tracked as model features; used to compute how much of
+        // the n-graph feature set was actually observed in a sample.
+        private static readonly string[] TrackedDigraphs =
+        {
+            "t-h", "h-e", "i-n", "e-r", "a-n", "r-e", "n-d", "a-t", "o-n", "n-t",
+            "h-a", "e-s", "s-t", "e-n", "e-d", "t-o", "i-t", "o-u", "e-a", "h-i",
+            "i-s", "o-r", "t-i", "a-s", "t-e", "e-t", "n-g", "o-f", "a-l", "d-e",
+            "s-e", "l-e", "s-a", "s-i", "a-r", "v-e", "r-a", "l-d", "u-r", "i-e",
+            "n-e", "m-e", "w-a", "w-h", "l-l", "o-o", "e-e", "s-s", "t-t", "f-f",
+            "r-r", "p-p"
+        };
+
+        private static readonly string[] TrackedTrigraphs =
+        {
+            "t-h-e", "a-n-d", "i-n-g", "i-o-n", "t-i-o", "e-n-t", "f-o-r", "h-e-r", "h-a-t", "h-i-s"
+        };
+
         public ProfilingModelInput ExtractFeatures(List<KeystrokeEvent> rawEvents, string userId = null)
         {
             if (rawEvents == null || rawEvents.Count < 2)
@@ -496,6 +513,12 @@ namespace Profiler.Api.Services
             int secondHalfBackspaces = backspaceTimestamps.Count(t => t >= halfwayTimestamp);
             input.ErrorRateIncrease = firstHalfBackspaces > 0 ?
                 (float)(secondHalfBackspaces - firstHalfBackspaces) / firstHalfBackspaces : 0;
+
+            // === COVERAGE FEATURES ===
+            input.ObservedDigraphFraction =
+                (float)TrackedDigraphs.Count(digraphFlightTimes.ContainsKey) / TrackedDigraphs.Length;
+            input.ObservedTrigraphFraction =
+                (float)TrackedTrigraphs.Count(trigraphTimes.ContainsKey) / TrackedTrigraphs.Length;
 
             return input;
         }

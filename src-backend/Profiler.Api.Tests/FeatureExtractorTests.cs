@@ -61,6 +61,29 @@ public class FeatureExtractorTests
     }
 
     [Fact]
+    public void CoverageFractions_ReflectObservedNgraphs()
+    {
+        // English-like text contains "the" -> both fractions populated, in [0,1].
+        var rich = _extractor.ExtractFeatures(
+            SyntheticData.BuildSession(baseDwell: 80, baseFlight: 60, variance: 5, seed: 3), "u1");
+        Assert.InRange(rich.ObservedDigraphFraction, 0.1f, 1f);
+        Assert.InRange(rich.ObservedTrigraphFraction, 0.05f, 1f);
+
+        // "abcdef" contains no tracked trigraph at all.
+        var events = new List<KeystrokeEvent>();
+        long t = 0;
+        foreach (char c in "abcdef")
+        {
+            events.Add(new KeystrokeEvent { Key = c.ToString(), Type = "keydown", Timestamp = t });
+            t += 100;
+            events.Add(new KeystrokeEvent { Key = c.ToString(), Type = "keyup", Timestamp = t });
+            t += 50;
+        }
+        var sparse = _extractor.ExtractFeatures(events, "u1");
+        Assert.Equal(0f, sparse.ObservedTrigraphFraction);
+    }
+
+    [Fact]
     public void TooFewEvents_ReturnsDefaultWithUserId()
     {
         var f = _extractor.ExtractFeatures(new List<KeystrokeEvent>(), "u9");

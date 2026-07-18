@@ -190,5 +190,12 @@ namespace Profiler.Api.Models
         // === FATIGUE INDICATORS ===
         public float TypingSpeedDecay { get; set; }  // Speed change over session
         public float ErrorRateIncrease { get; set; } // Error rate change over session
+
+        // === COVERAGE FEATURES ===
+        // Fraction of the tracked digraph/trigraph features actually observed in this
+        // sample. Unobserved ones fall back to the session mean and carry no signal,
+        // so this tells the model how much to trust the n-graph features.
+        public float ObservedDigraphFraction { get; set; }
+        public float ObservedTrigraphFraction { get; set; }
     }
 }
